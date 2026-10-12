@@ -432,6 +432,184 @@ def DCA(
 
     return (X, Y)
 
+
+def quadCamber(beta_in, beta_out, thick, numpts, thickness_model="NACA4", x_mid=None, beta_mid=None):
+    """
+    Generate a cambered airfoil with a selectable thickness distribution.
+
+    Coordinates are returned clockwise:
+        trailing edge -> pressure side -> leading edge
+        -> suction side -> trailing edge
+
+    Parameters
+    ----------
+    beta_in : float
+        Camberline tangent angle at x = 0.
+
+    beta_out : float
+        Camberline tangent angle at x = 1.
+
+    x_mid : list or None
+        Intermediate camberline locations as fractions of chord.
+        Must be strictly increasing.
+
+    beta_mid : list or None
+        Intermediate camberline tangent angles in degrees.
+        Must have the same length as x_mid.
+
+    thick : float
+        Maximum thickness as a percentage of chord.
+
+    numpts : int
+        Total number of returned coordinates.
+
+    thickness_model : str
+        Thickness distribution selector. Currently supported:
+        "NACA4".
+
+    """
+    thick=thick/100
+
+    if numpts < 8:
+        raise ValueError("numpts must be at least 8")
+
+
+    # Use an even number of points
+    numpts = 2*(numpts // 2)
+    nside = numpts // 2
+
+    # Check intermediate-point inputs
+    has_x_mid = x_mid is not None
+    has_beta_mid = beta_mid is not None
+
+    if has_x_mid != has_beta_mid:
+        raise ValueError(
+            "x_mid and beta_mid must either both be supplied or both be None."
+        )
+
+    if not has_x_mid:
+        x_knots = np.array([0.0, 1.0])
+        beta_knots = np.array([beta_in, beta_out])
+
+    else:
+        x_mid = np.asarray(x_mid, dtype=float).ravel()
+        beta_mid = np.asarray(beta_mid, dtype=float).ravel()
+
+        if len(x_mid) != len(beta_mid):
+            raise ValueError(
+                "x_mid and beta_mid must have the same length."
+            )
+
+        if len(x_mid) == 0:
+            x_knots = np.array([0.0, 1.0])
+            beta_knots = np.array([beta_in, beta_out])
+
+        else:
+            if np.any(x_mid <= 0.0) or np.any(x_mid >= 1.0):
+                raise ValueError(
+                    "All x_mid values must lie between 0 and 1."
+                )
+
+            if np.any(np.diff(x_mid) <= 0.0):
+                raise ValueError(
+                    "x_mid values must be strictly increasing."
+                )
+
+            x_knots = np.concatenate((
+                [0.0],
+                x_mid,
+                [1.0]
+            ))
+
+            beta_knots = np.concatenate((
+                [beta_in],
+                beta_mid,
+                [beta_out]
+            ))
+
+    # Convert all metal angles to slopes
+    beta_knots = np.deg2rad(beta_knots)
+    slope_knots = np.tan(beta_knots)
+
+    # Cosine-spaced points from leading edge to trailing edge
+    x = 0.5*(1.0 - np.cos(np.linspace(0.0, np.pi, nside + 1)))
+
+    yc = np.zeros_like(x)
+    dydx = np.zeros_like(x)
+
+    # Camberline height at the beginning of each segment
+    y_start = 0.0
+
+    for n in range(len(x_knots) - 1):
+
+        xa = x_knots[n]
+        xb = x_knots[n + 1]
+        segment_length = xb - xa
+
+        slope_a = slope_knots[n]
+        slope_b = slope_knots[n + 1]
+
+        if n == len(x_knots) - 2:
+            segment = (x >= xa) & (x <= xb)
+        else:
+            segment = (x >= xa) & (x < xb)
+
+        t = (x[segment] - xa)/segment_length
+
+        # Quadratic segment with prescribed slopes at both ends
+        yc[segment] = y_start + segment_length*(
+            slope_a*t
+            + 0.5*(slope_b - slope_a)*t**2
+        )
+
+        # Linear slope variation over the quadratic segment
+        dydx[segment] = (
+            slope_a
+            + (slope_b - slope_a)*t
+        )
+
+        # Camberline height at the next knot
+        y_start += segment_length*0.5*(slope_a + slope_b)
+
+    # Camberline tangent angle
+    theta = np.arctan(dydx)
+
+    # Unit normal to camberline
+    nx = -np.sin(theta)
+    ny =  np.cos(theta)
+
+    # Thickness distribution
+    thickness_model = thickness_model.upper()
+
+    if thickness_model == "NACA4":
+
+        yt = 5.0*thick*(
+            0.2969*np.sqrt(x)
+            - 0.1260*x
+            - 0.3516*x**2
+            + 0.2843*x**3
+            - 0.1036*x**4
+        )
+
+    else:
+        raise ValueError(
+            f"Unknown thickness model: {thickness_model}"
+        )
+
+    # Suction and pressure surfaces
+    xu = x + yt*nx
+    yu = yc + yt*ny
+
+    xl = x - yt*nx
+    yl = yc - yt*ny
+
+    # Clockwise ordering:
+    # TE -> pressure side -> LE -> suction side -> near TE
+    X = np.concatenate((xl[:0:-1], xu[:-1]))
+    Y = np.concatenate((yl[:0:-1], yu[:-1]))
+
+    return X, Y
+
 def NACA4(maxc, maxp, thick, numpts):
     # NACA 4-digit airfoil generator.
     
